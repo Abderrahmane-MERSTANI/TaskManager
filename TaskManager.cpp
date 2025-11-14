@@ -4,11 +4,14 @@
 #include <vector>
 #include <iomanip>
 #include <ctime>
-#include <nlohmann/json.hpp> // JSON for Modern C++ (https://github.com/nlohmann/json)
+#include <optional>
+#include <algorithm>
+#include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
 using namespace std;
 
+// ======================= STRUCT =======================
 struct Task {
     int id;
     string title;
@@ -16,6 +19,7 @@ struct Task {
     string created_at;
 };
 
+// ======================= UTILS ========================
 string now() {
     time_t t = time(nullptr);
     char buf[64];
@@ -23,27 +27,42 @@ string now() {
     return string(buf);
 }
 
-vector<Task> loadTasks(const string &filename) {
+int nextId(const vector<Task>& tasks) {
+    if (tasks.empty()) return 1;
+    return max_element(tasks.begin(), tasks.end(),
+        [](const Task& a, const Task& b) { return a.id < b.id; }
+    )->id + 1;
+}
+
+// ======================= JSON IO =======================
+vector<Task> loadTasks(const string& filename) {
     vector<Task> tasks;
     ifstream file(filename);
+
     if (!file.is_open()) return tasks;
 
-    json j;
-    file >> j;
-    for (auto &item : j) {
-        tasks.push_back({
-            item["id"],
-            item["title"],
-            item["done"],
-            item["created_at"]
-        });
+    try {
+        json j;
+        file >> j;
+
+        for (auto& item : j) {
+            tasks.push_back({
+                item.value("id", 0),
+                item.value("title", "Sans titre"),
+                item.value("done", false),
+                item.value("created_at", "unknown")
+            });
+        }
+    } catch (...) {
+        cerr << "Erreur: fichier JSON corrompu.\n";
     }
+
     return tasks;
 }
 
-void saveTasks(const vector<Task> &tasks, const string &filename) {
+void saveTasks(const vector<Task>& tasks, const string& filename) {
     json j = json::array();
-    for (const auto &t : tasks) {
+    for (const auto& t : tasks) {
         j.push_back({
             {"id", t.id},
             {"title", t.title},
@@ -51,74 +70,106 @@ void saveTasks(const vector<Task> &tasks, const string &filename) {
             {"created_at", t.created_at}
         });
     }
+
     ofstream file(filename);
+    if (!file.is_open()) {
+        cerr << "Erreur: impossible d'écrire dans " << filename << "\n";
+        return;
+    }
     file << setw(2) << j;
 }
 
-void listTasks(const vector<Task> &tasks) {
+// ======================= OPERATIONS =======================
+void listTasks(const vector<Task>& tasks) {
     cout << "\n===== LISTE DES TÂCHES =====\n";
     if (tasks.empty()) {
-        cout << "Aucune tâche trouvée.\n";
+        cout << "Aucune tâche disponible.\n";
         return;
     }
-    for (const auto &t : tasks) {
-        cout << "#" << t.id << " [" << (t.done ? "✔" : " ") << "] "
-             << t.title << " (créée le " << t.created_at << ")\n";
+
+    for (const auto& t : tasks) {
+        cout << "#" << t.id 
+             << " [" << (t.done ? "✔" : " ") << "] "
+             << t.title 
+             << " (créée le " << t.created_at << ")\n";
     }
 }
 
-void addTask(vector<Task> &tasks) {
-    cin.ignore();
+void addTask(vector<Task>& tasks) {
+    cin.ignore(numeric_limits<streamsize>::max(), '\n');
+
     cout << "Titre de la tâche : ";
     string title;
     getline(cin, title);
 
-    int id = tasks.empty() ? 1 : tasks.back().id + 1;
-    tasks.push_back({id, title, false, now()});
-    cout << "Tâche ajoutée !\n";
+    if (title.empty()) {
+        cout << "Erreur: titre vide.\n";
+        return;
+    }
+
+    tasks.push_back({
+        nextId(tasks),
+        title,
+        false,
+        now()
+    });
+
+    cout << "Tâche ajoutée avec succès !\n";
 }
 
-void markDone(vector<Task> &tasks) {
-    int id;
-    cout << "ID de la tâche à marquer terminée : ";
-    cin >> id;
-    for (auto &t : tasks) {
+optional<Task*> findTask(vector<Task>& tasks, int id) {
+    for (auto& t : tasks) {
         if (t.id == id) {
-            t.done = true;
-            cout << "Tâche #" << id << " marquée comme terminée.\n";
-            return;
+            return &t;
         }
     }
-    cout << "Tâche non trouvée.\n";
+    return nullopt;
 }
 
-void deleteTask(vector<Task> &tasks) {
-    int id;
-    cout << "ID de la tâche à supprimer : ";
-    cin >> id;
-    for (auto it = tasks.begin(); it != tasks.end(); ++it) {
-        if (it->id == id) {
-            tasks.erase(it);
-            cout << "Tâche supprimée.\n";
-            return;
-        }
+void markDone(vector<Task>& tasks) {
+    cout << "ID de la tâche : ";
+    int id; cin >> id;
+
+    auto t = findTask(tasks, id);
+    if (!t) {
+        cout << "Tâche non trouvée.\n";
+        return;
     }
-    cout << "Tâche non trouvée.\n";
+
+    (*t.value())->done = true;
+    cout << "Tâche marquée terminée.\n";
 }
 
+void deleteTask(vector<Task>& tasks) {
+    cout << "ID de la tâche : ";
+    int id; cin >> id;
+
+    auto it = remove_if(tasks.begin(), tasks.end(),
+                        [id](const Task& t) { return t.id == id; });
+
+    if (it == tasks.end()) {
+        cout << "Tâche introuvable.\n";
+        return;
+    }
+
+    tasks.erase(it, tasks.end());
+    cout << "Tâche supprimée.\n";
+}
+
+// ======================= MAIN =======================
 int main() {
     const string filename = "tasks.json";
     vector<Task> tasks = loadTasks(filename);
 
     int choice;
     do {
-        cout << "\n=== GESTIONNAIRE DE TÂCHES ===\n";
-        cout << "1. Lister les tâches\n";
-        cout << "2. Ajouter une tâche\n";
-        cout << "3. Marquer une tâche comme terminée\n";
-        cout << "4. Supprimer une tâche\n";
-        cout << "0. Quitter\n";
-        cout << "Choix : ";
+        cout << "\n=== GESTIONNAIRE DE TÂCHES ===\n"
+             << "1. Lister les tâches\n"
+             << "2. Ajouter une tâche\n"
+             << "3. Marquer une tâche comme terminée\n"
+             << "4. Supprimer une tâche\n"
+             << "0. Quitter\n"
+             << "Votre choix : ";
         cin >> choice;
 
         switch (choice) {
@@ -131,6 +182,5 @@ int main() {
         }
     } while (choice != 0);
 
-    saveTasks(tasks, filename);
     return 0;
 }
